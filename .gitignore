@@ -6,3 +6,5 @@
 /composer.phar
 /phpunit.xml
 /satis.phar
+
+/vendor-bin/*/vendor/*
