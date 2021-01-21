@@ -87,6 +87,12 @@ class PackagesBuilder extends Builder
             $repo['metadata-url'] = $metadataUrl;
         }
 
+        if (!empty($this->config['available-package-patterns'])) {
+            $repo['available-package-patterns'] = $this->config['available-package-patterns'];
+        } else {
+            $repo['available-packages'] = array_keys($packagesByName);
+        }
+
         foreach ($packagesByName as $packageName => $versionPackages) {
             $stableVersions = [];
             $devVersions = [];
@@ -235,18 +241,14 @@ class PackagesBuilder extends Builder
             // The file already contains the expected contents.
             return;
         }
-        
+
         $dir = dirname($path);
         if (!is_dir($dir)) {
             if (file_exists($dir)) {
-                throw new \UnexpectedValueException(
-                    $dir . ' exists and is not a directory.'
-                );
+                throw new \UnexpectedValueException($dir . ' exists and is not a directory.');
             }
             if (!@mkdir($dir, 0777, true)) {
-                throw new \UnexpectedValueException(
-                    $dir . ' does not exist and could not be created.'
-                );
+                throw new \UnexpectedValueException($dir . ' does not exist and could not be created.');
             }
         }
 

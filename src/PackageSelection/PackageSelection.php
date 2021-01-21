@@ -88,6 +88,12 @@ class PackageSelection
     /** @var array A list of blacklisted package/constraints. */
     private $blacklist = [];
 
+    /** @var array|null A list of package types. If set only packages with one of these types will be selected */
+    private $includeTypes;
+
+    /** @var array A list of package types that will not be selected */
+    private $excludeTypes = [];
+
     /** @var array|bool Patterns from strip-hosts. */
     private $stripHosts = false;
 
@@ -120,6 +126,11 @@ class PackageSelection
     public function hasBlacklist(): bool
     {
         return count($this->blacklist) > 0;
+    }
+
+    public function hasTypeFilter(): bool
+    {
+        return null !== $this->includeTypes || count($this->excludeTypes) > 0;
     }
 
     public function setPackagesFilter(array $packagesFilter = []): void
@@ -165,17 +176,7 @@ class PackageSelection
             $repos = $this->filterPackages($repos);
 
             if (0 === count($repos)) {
-                throw new \InvalidArgumentException(sprintf(
-                    'Could not find any package(s) matching: %s',
-                    implode(', ', $this->packagesFilter)
-                ));
-            }
-
-            if (count($repos) > 1) {
-                throw new \InvalidArgumentException(sprintf(
-                    'Found more than one package matching: %s',
-                    implode(', ', $this->packagesFilter)
-                ));
+                throw new \InvalidArgumentException(sprintf('Could not find any repositories config with "name" matching your package(s) filter: %s', implode(', ', $this->packagesFilter)));
             }
         }
 
@@ -207,6 +208,7 @@ class PackageSelection
         $this->setSelectedAsAbandoned();
 
         $this->pruneBlacklisted($pool, $verbose);
+        $this->pruneByType($verbose);
 
         ksort($this->selected, SORT_STRING);
 
@@ -328,6 +330,8 @@ class PackageSelection
         $this->minimumStabilityPerPackage = $config['minimum-stability-per-package'] ?? [];
         $this->abandoned = $config['abandoned'] ?? [];
         $this->blacklist = $config['blacklist'] ?? [];
+        $this->includeTypes = $config['include-types'] ?? null;
+        $this->excludeTypes = $config['exclude-types'] ?? [];
 
         $this->stripHosts = $this->createStripHostsPatterns($config['strip-hosts'] ?? false);
         $this->archiveEndpoint = isset($config['archive']['directory']) ? ($config['archive']['prefix-url'] ?? $config['homepage']) . '/' : null;
@@ -507,8 +511,6 @@ class PackageSelection
      * @param int[] $addr2 Chunked addr
      * @param int $len Length of the test
      * @param int $chunklen Length of each chunk
-     *
-     * @return bool
      */
     private function matchAddr($addr1, $addr2, $len = 0, $chunklen = 32): bool
     {
@@ -524,7 +526,6 @@ class PackageSelection
     }
 
     /**
-     * @param Pool $pool
      * @param RepositoryInterface[] $repositories
      *
      * @throws \Exception
@@ -569,23 +570,59 @@ class PackageSelection
             foreach ($this->selected as $selectedKey => $package) {
                 foreach ($this->blacklist as $blacklistName => $blacklistConstraint) {
                     $constraint = $parser->parseConstraints($blacklistConstraint);
-                    if ($pool::MATCH === $pool->match($package, $blacklistName, $constraint, FALSE)) {
-                       if ($verbose) {
-                          $this->output->writeln('Blacklisted ' . $package->getPrettyName() . ' (' . $package->getPrettyVersion() . ')');
-                       }
-                       $blacklisted[$selectedKey] = $package;
-                       unset($this->selected[$selectedKey]);
+                    if ($pool::MATCH === $pool->match($package, $blacklistName, $constraint, false)) {
+                        if ($verbose) {
+                            $this->output->writeln('Blacklisted ' . $package->getPrettyName() . ' (' . $package->getPrettyVersion() . ')');
+                        }
+                        $blacklisted[$selectedKey] = $package;
+                        unset($this->selected[$selectedKey]);
                     }
                 }
             }
         }
+
         return $blacklisted;
     }
 
     /**
-     * Gets a list of filtered Links.
+     * Removes packages with types that don't match the configuration
      *
-     * @param Composer $composer
+     * @return PackageInterface[]
+     */
+    private function pruneByType(bool $verbose): array
+    {
+        $excluded = [];
+        if ($this->hasTypeFilter()) {
+            foreach ($this->selected as $selectedKey => $package) {
+                if (null !== $this->includeTypes && !in_array($package->getType(), $this->includeTypes)) {
+                    if ($verbose) {
+                        $this->output->writeln(
+                            'Excluded ' . $package->getPrettyName()
+                            . ' (' . $package->getPrettyVersion() . ') because '
+                            . $package->getType() . ' was not in the array of types to include.'
+                        );
+                    }
+                    $excluded[$selectedKey] = $package;
+                    unset($this->selected[$selectedKey]);
+                } elseif (in_array($package->getType(), $this->excludeTypes)) {
+                    if ($verbose) {
+                        $this->output->writeln(
+                            'Excluded ' . $package->getPrettyName()
+                            . ' (' . $package->getPrettyVersion() . ') because '
+                            . $package->getType() . ' was in the array of types to exclude.'
+                        );
+                    }
+                    $excluded[$selectedKey] = $package;
+                    unset($this->selected[$selectedKey]);
+                }
+            }
+        }
+
+        return $excluded;
+    }
+
+    /**
+     * Gets a list of filtered Links.
      *
      * @return Link[]
      */
@@ -610,8 +647,6 @@ class PackageSelection
 
     /**
      * @param RepositoryInterface[] $repositories
-     * @param string $minimumStability
-     * @param bool $verbose
      *
      * @return Link[]|PackageInterface[]
      */
@@ -651,10 +686,7 @@ class PackageSelection
     }
 
     /**
-     * @param Pool $pool
      * @param Link[]|PackageInterface[] $links
-     * @param bool $isRoot
-     * @param bool $verbose
      *
      * @return Link[]
      */
@@ -757,8 +789,6 @@ class PackageSelection
     }
 
     /**
-     * @param Composer $composer
-     *
      * @return RepositoryInterface[]
      */
     private function getDepRepos(Composer $composer): array
@@ -779,8 +809,6 @@ class PackageSelection
     }
 
     /**
-     * @param RepositoryInterface $repo
-     *
      * @return PackageInterface[]
      */
     private function getPackages(RepositoryInterface $repo): array
@@ -799,9 +827,6 @@ class PackageSelection
     }
 
     /**
-     * @param PackageInterface $package
-     * @param bool $isRoot
-     *
      * @return Link[]
      */
     private function getRequired(PackageInterface $package, bool $isRoot): array
@@ -857,13 +882,14 @@ class PackageSelection
 
         return array_filter(
             $repositories,
-            function ($repository) use ($packages) {
+            static function ($repository) use ($packages) {
                 if (!($repository instanceof ConfigurableRepositoryInterface)) {
                     return false;
                 }
 
                 $config = $repository->getRepoConfig();
 
+                // We need name to be set on repo config as it would otherwise be too slow on remote repos (VCS, ..)
                 if (!isset($config['name']) || !in_array($config['name'], $packages)) {
                     return false;
                 }
